@@ -2,17 +2,30 @@
 using UnityEditor;
 using System.Collections.Generic;
 using System.Reflection;
-using UnityEngine.SceneManagement;
 using System.IO;
 
 // 프로젝트나 씬의 오브젝트들을 잠시 담아두는 유틸리티
 public class ObjectClipboardWindow : EditorWindow
 {
-    private const string mc_EditorPrefsWord = "SoxObjCB";
-    private const string mc_EditorPrefsWordLock = "SoxObjCBLock";
+    private string m_projectName = "";
+
+    private const string mc_EditorPrefsWordToolName = "SoxOCB_";
+    private const string mc_EditorPrefsWordInsID = "_InsID_"; // 씬 오브젝트 기록용
+    private const string mc_EditorPrefsWordGUID = "_GUID_"; // 프로젝트 오브젝트 기록용
+    private const string mc_EditorPrefsWordLock = "_Lock_";
+    private const string mc_EditorPrefsWordDescription = "_Desc_";
+    private const string mc_EditorPrefsWordOptRCount = "_OptRCount_"; // 툴 옵션 레지스트리 카운트
+    private const string mc_EditorPrefsWordOptSDescription = "_OptSDesc_"; // 툴 옵션 레지스트리 카운트
 
     // The maximum number to record in the registry.
-    private const int mc_maxCount = 50;
+    private const int mc_maxRegistryLimit = 1000;
+
+    // 메뉴 오픈 여부는 레지스트리에 기록하지 않음
+    private bool m_menuOpen = false;
+
+    // 레지스트리에 기록하는 툴 옵션
+    private int m_optRegistryCount = 50;
+    private bool m_optShowDescription = false;
 
     private GUIContent m_iconToolSelect;
     private GUIContent m_iconToolMove;
@@ -25,7 +38,7 @@ public class ObjectClipboardWindow : EditorWindow
     string m_iconTooltipCamGameToView = "";
     string m_iconTooltipCamDisabled = "";
 
-    // 토글 버튼용 스타일
+    // 토글 버튼 스타일
     private static GUIStyle ToggleButtonStyleNormal = null;
     private static GUIStyle ToggleButtonStyleToggled = null;
 
@@ -34,11 +47,13 @@ public class ObjectClipboardWindow : EditorWindow
     {
         public Object m_object;
         public bool m_locked; // 잠긴 것은 삭제되지 않는다.
+        public string m_description;
 
-        public ClippedObject(Object obj, bool locked)
+        public ClippedObject(Object obj, bool locked, string description)
         {
             m_object = obj;
             m_locked = locked;
+            m_description = description;
         }
     }
 
@@ -55,24 +70,21 @@ public class ObjectClipboardWindow : EditorWindow
         window.minSize = new Vector2(200, 150);
     }
 
-    void OnValidate()
-    {
-        UpdateEditorPrefs();
-    }
-
     void OnSelectionChange()
     {
         Repaint();
     }
 
-
     void OnEnable()
     {
+        m_projectName = GetProjectName();
+
         #if UNITY_2017_2_OR_NEWER
         string selectIconName = "Grid.Default"; // 2017.2 부터 추가된 아이콘
         #else
         string selectIconName = "ViewToolZoom On";
         #endif
+
         m_iconToolSelect = EditorGUIUtility.IconContent(selectIconName);
         m_iconToolSelect.tooltip = "Select";
         m_iconToolMove = EditorGUIUtility.IconContent("d_CollabMoved Icon");
@@ -97,30 +109,72 @@ public class ObjectClipboardWindow : EditorWindow
         UpdateEditorPrefs();
     }
 
+    // 레지스트리에 기록될 일련번호 키 스트링을 세팅하는 함수
+    private void SetOptKey(out string keyRegCount, out string keySDescription)
+    {
+        keyRegCount = mc_EditorPrefsWordToolName + m_projectName + mc_EditorPrefsWordOptRCount;
+        keySDescription = mc_EditorPrefsWordToolName + m_projectName + mc_EditorPrefsWordOptSDescription;
+    }
+
+    // 레지스트리에 기록될 일련번호 키 스트링을 세팅하는 함수
+    private void SetIndexedKey(int index, out string keyInsID, out string keyGUID, out string keyLock, out string keyDescription)
+    {
+        keyInsID = mc_EditorPrefsWordToolName + m_projectName + mc_EditorPrefsWordInsID + index.ToString();
+        keyGUID = mc_EditorPrefsWordToolName + m_projectName + mc_EditorPrefsWordGUID + index.ToString();
+        keyLock = mc_EditorPrefsWordToolName + m_projectName + mc_EditorPrefsWordLock + index.ToString();
+        keyDescription = mc_EditorPrefsWordToolName + m_projectName + mc_EditorPrefsWordDescription + index.ToString();
+    }
+
     private void GetEditorPrefs()
     {
-        m_objects.Clear();
-        string key = "";
-        string keyLock = "";
-        int id = 0;
-        bool locked = false;
-        string projectName = GetProjectName();
-        for (int i = 0; i < mc_maxCount; i++)
+        // 툴 옵션
+        string keyRegCount = "";
+        string keySDescription = "";
+        SetOptKey(out keyRegCount, out keySDescription);
+        if (EditorPrefs.HasKey(keyRegCount))
         {
-            key = mc_EditorPrefsWord + projectName + i.ToString();
-            keyLock = mc_EditorPrefsWordLock + projectName + i.ToString();
-            if (EditorPrefs.HasKey(key))
+            m_optRegistryCount = EditorPrefs.GetInt(keyRegCount);
+        }
+        if (EditorPrefs.HasKey(keySDescription))
+        {
+            m_optShowDescription = EditorPrefs.GetBool(keySDescription);
+        }
+
+        m_objects.Clear();
+        string keyInsID = "";
+        string keyGUID = "";
+        string keyLock = "";
+        string keyDescription = "";
+        int insId = 0;
+        string guid = "";
+        bool locked = false;
+        string description;
+        for (int i = 0; i < m_optRegistryCount; i++)
+        {
+            SetIndexedKey(i, out keyInsID, out keyGUID, out keyLock, out keyDescription);
+            if (EditorPrefs.HasKey(keyInsID))
             {
-                id = EditorPrefs.GetInt(key);
-                if (id == 0)
+                insId = EditorPrefs.GetInt(keyInsID);
+                guid = EditorPrefs.GetString(keyGUID);
+                if (insId == 0 && guid == "")
                 {
-                    m_objects.Add(new ClippedObject(null, false));
+                    m_objects.Add(new ClippedObject(null, false, ""));
                 }
-                else
+                else // 씬오브젝트거나 프로젝트 오브젝트거나
                 {
-                    Object idObj = EditorUtility.InstanceIDToObject(id);
                     locked = EditorPrefs.GetBool(keyLock);
-                    m_objects.Add(new ClippedObject(idObj, locked));
+                    description = EditorPrefs.GetString(keyDescription);
+                    if (guid == "") // 씬오브젝트의 경우
+                    {
+                        Object idObj = EditorUtility.InstanceIDToObject(insId);
+                        m_objects.Add(new ClippedObject(idObj, locked, description));
+                    }
+                    else // 프로젝트 오브트의 경우
+                    {
+                        string path = AssetDatabase.GUIDToAssetPath(guid);
+                        Object idObj = AssetDatabase.LoadAssetAtPath(path, typeof(Object));
+                        m_objects.Add(new ClippedObject(idObj, locked, description));
+                    }
                 }
             }
             else
@@ -135,22 +189,59 @@ public class ObjectClipboardWindow : EditorWindow
         if (m_objects.Count == 0)
             return;
 
-        string key = "";
+        // 툴 옵션
+        string keyRegCount = "";
+        string keySDescription = "";
+        SetOptKey(out keyRegCount, out keySDescription);
+        EditorPrefs.SetInt(keyRegCount, m_optRegistryCount);
+        EditorPrefs.SetBool(keySDescription, m_optShowDescription);
+
+        string keyInsID = "";
+        string keyGUID = "";
         string keyLock = "";
-        string projectName = GetProjectName();
-        for (int i = 0; i < m_objects.Count; i++)
+        string keyDescription = "";
+        int count = Mathf.Min(m_optRegistryCount, m_objects.Count);
+        for (int i = 0; i < count; i++)
         {
-            key = mc_EditorPrefsWord + projectName + i.ToString();
-            keyLock = mc_EditorPrefsWordLock + projectName + i.ToString();
+            SetIndexedKey(i, out keyInsID, out keyGUID, out keyLock, out keyDescription);
             if (m_objects[i].m_object != null)
             {
-                EditorPrefs.SetInt(key, m_objects[i].m_object.GetInstanceID());
+                if (AssetDatabase.Contains(m_objects[i].m_object))
+                {
+                    // 프로젝트 애셋
+                    EditorPrefs.SetInt(keyInsID, 0);
+                    string guid;
+                    #if UNITY_2018_2_OR_NEWER
+                    long file; // 사용하지 않지만 세팅
+                    #else
+                    int file; // 사용하지 않지만 세팅
+                    #endif
+                    if (AssetDatabase.TryGetGUIDAndLocalFileIdentifier(m_objects[i].m_object, out guid, out file))
+                    {
+                        // GUID를 얻어올 수 있으면
+                        EditorPrefs.SetString(keyGUID, guid);
+                    }
+                    else
+                    {
+                        // GUID를 얻어오는데 실패하면 (이미 프로젝트 애셋임을 검사한 뒤라서 그럴 일은 없겠지만)
+                        EditorPrefs.SetString(keyGUID, "");
+                    }
+                }
+                else
+                {
+                    // 씬 하이러키 애셋
+                    EditorPrefs.SetInt(keyInsID, m_objects[i].m_object.GetInstanceID());
+                    EditorPrefs.SetString(keyGUID, "");
+                }
                 EditorPrefs.SetBool(keyLock, m_objects[i].m_locked);
+                EditorPrefs.SetString(keyDescription, m_objects[i].m_description);
             }
             else
             {
-                EditorPrefs.SetInt(key, 0);
-                //EditorPrefs.SetBool(keyLock, false); // 오브젝트가 없으면 Lock 여부를 저장할 필요 없음
+                EditorPrefs.SetInt(keyInsID, 0);
+                EditorPrefs.SetString(keyGUID, "");
+                EditorPrefs.SetBool(keyLock, false);
+                EditorPrefs.SetString(keyDescription, "");
             }
         }
     }
@@ -163,19 +254,51 @@ public class ObjectClipboardWindow : EditorWindow
 
     private void ClearEditorPrefs()
     {
-        string key = "";
-        string projectName = GetProjectName();
-        for (int i = 0; i < mc_maxCount; i++)
+        // 툴 옵션
+        string keyRegCount = "";
+        string keySDescription = "";
+        SetOptKey(out keyRegCount, out keySDescription);
+        if (EditorPrefs.HasKey(keyRegCount))
         {
-            key = mc_EditorPrefsWord + projectName + i.ToString();
-            if (EditorPrefs.HasKey(key))
+            EditorPrefs.DeleteKey(keyRegCount);
+        }
+        if (EditorPrefs.HasKey(keySDescription))
+        {
+            EditorPrefs.DeleteKey(keySDescription);
+        }
+
+        string keyInsID = "";
+        string keyGUID = "";
+        string keyLock = "";
+        string keyDescription = "";
+        for (int i = 0; i < mc_maxRegistryLimit; i++)
+        {
+            SetIndexedKey(i, out keyInsID, out keyGUID, out keyLock, out keyDescription);
+            bool breakTest = false;
+            if (EditorPrefs.HasKey(keyInsID) == false && EditorPrefs.HasKey(keyGUID) == false && EditorPrefs.HasKey(keyLock) == false && EditorPrefs.HasKey(keyDescription) == false)
             {
-                EditorPrefs.DeleteKey(key);
+                breakTest = true;
             }
-            else
+            
+            if (EditorPrefs.HasKey(keyInsID))
             {
+                EditorPrefs.DeleteKey(keyInsID);
+            }
+            if (EditorPrefs.HasKey(keyGUID))
+            {
+                EditorPrefs.DeleteKey(keyGUID);
+            }
+            if (EditorPrefs.HasKey(keyLock))
+            {
+                EditorPrefs.DeleteKey(keyLock);
+            }
+            if (EditorPrefs.HasKey(keyDescription))
+            {
+                EditorPrefs.DeleteKey(keyDescription);
+            }
+
+            if (breakTest)
                 break;
-            }
         }
     }
 
@@ -274,6 +397,7 @@ public class ObjectClipboardWindow : EditorWindow
     {
         float buttonWidth = 27f;
         float buttonHeight = 22f;
+        float menuHeight = 20f;
 
         // 토글 버튼 스타일 정의
         if (ToggleButtonStyleNormal == null || ToggleButtonStyleToggled.normal.background == null) // ToggleButtonStyleToggled.normal.background 은 에디터 실행 종료 직후 null로 초기화되기때문에 다시 빨간 텍스쳐로 입혀줘야함.
@@ -282,62 +406,43 @@ public class ObjectClipboardWindow : EditorWindow
         }
 
         GUILayout.BeginHorizontal();
-        if (GUILayout.Button("Clear"))
+
+        GUIContent menuButton = m_menuOpen ? new GUIContent("<", "Settings") : new GUIContent("...", "Settings");
+
+        if (GUILayout.Button(menuButton, GUILayout.Width(30f), GUILayout.Height(menuHeight)))
+        {
+            m_menuOpen = !m_menuOpen;
+        }
+
+        if (GUILayout.Button("Clear", GUILayout.Height(menuHeight)))
         {
             for (int i = 0; i < m_objects.Count; i++)
             {
                 if (m_objects[i].m_locked == false)
-                    m_objects[i] = new ClippedObject(null, false);
+                    m_objects[i] = new ClippedObject(null, false, "");
             }
             UpdateEditorPrefs();
         }
 
-        /* AutoListCount() 자동 리스트 관리 기능 들어가면서 리스트 추가 삭제 버튼 제거
-        if (GUILayout.Button(EditorGUIUtility.IconContent("Toolbar Minus")))
+        if (GUILayout.Button(new GUIContent("▼", "Shift Down"), GUILayout.Height(menuHeight)))
         {
-            if (m_objects.Count > 1)
-            {
-                int index = m_objects.Count - 1;
-                bool removed = false;
-                while (removed == false && index >= 0)
-                {
-                    if (m_objects[index].m_locked == false)
-                    {
-                        m_objects.RemoveAt(index);
-                        removed = true;
-                    }
-                    index--;
-                }
-            }
+            m_objects.Insert(0, new ClippedObject(null, false, ""));
             UpdateEditorPrefs();
         }
 
-        if (GUILayout.Button(EditorGUIUtility.IconContent("Toolbar Plus")))
-        {
-            m_objects.Add(new ClippedObject(null, false));
-            UpdateEditorPrefs();
-        }
-        */
-
-        if (GUILayout.Button(new GUIContent("▼", "Shift Down")))
-        {
-            m_objects.Insert(0, new ClippedObject(null, false));
-            UpdateEditorPrefs();
-        }
-
-        if (GUILayout.Button(new GUIContent("▲", "Shift Up")))
+        if (GUILayout.Button(new GUIContent("▲", "Shift Up"), GUILayout.Height(menuHeight)))
         {
             if (m_objects.Count > 1 && m_objects[0].m_locked == false)
             {
                 m_objects.RemoveAt(0);
-                m_objects.Add(new ClippedObject(null, false));
+                m_objects.Add(new ClippedObject(null, false, ""));
                 UpdateEditorPrefs();
             }
         }
 
         // 참고용 메모, EditorWindow의 가로 폭은 OnGUI에 기본으로 사용되는 position 변수가 들고있음. https://forum.unity.com/threads/solved-how-to-get-the-size-of-editorwindow.39263/
 
-        GUILayout.Space(14f);
+        GUILayout.Space(12f);
 
         // 씬 하이러키에서 카메라가 선택된 상태인지 체크
         Camera gameCam = GameCameraSelected();
@@ -353,12 +458,12 @@ public class ObjectClipboardWindow : EditorWindow
             m_iconCamGameToView.tooltip = m_iconTooltipCamGameToView;
         }
 
-        if (GUILayout.Button(m_iconCamViewToGame, GUILayout.Width(40f), GUILayout.Height(buttonHeight)))
+        if (GUILayout.Button(m_iconCamViewToGame, GUILayout.Width(38f), GUILayout.Height(menuHeight)))
         {
             ViewToGameCamera(gameCam);
         }
 
-        if (GUILayout.Button(m_iconCamGameToView, GUILayout.Width(40f), GUILayout.Height(buttonHeight)))
+        if (GUILayout.Button(m_iconCamGameToView, GUILayout.Width(38f), GUILayout.Height(menuHeight)))
         {
             GameToViewCamera(gameCam);
         }
@@ -366,6 +471,30 @@ public class ObjectClipboardWindow : EditorWindow
         GUI.enabled = true;
 
         GUILayout.EndHorizontal();
+
+        // 옵션이 켜져있으면
+        if (m_menuOpen)
+        {
+            EditorGUI.BeginChangeCheck();
+            {
+                EditorGUI.indentLevel++;
+                m_optRegistryCount = EditorGUILayout.IntField(new GUIContent("Registry usage", "The maximum number to write to the Unity Editor registry. The default value is 50, and using too large a value is not recommended.\n에디터 레지스트리에 기록하는 최대 값. 디폴트는 50이며 너무 큰 값을 사용하지 말아주세요."), m_optRegistryCount);
+                if (m_optRegistryCount > mc_maxRegistryLimit)
+                {
+                    m_optRegistryCount = mc_maxRegistryLimit;
+                }
+                if (m_optRegistryCount < 1)
+                {
+                    m_optRegistryCount = 1;
+                }
+                m_optShowDescription = EditorGUILayout.Toggle(new GUIContent("Show description", ""), m_optShowDescription);
+                EditorGUI.indentLevel--;
+            }
+            if (EditorGUI.EndChangeCheck())
+            {
+                UpdateEditorPrefs();
+            }
+        }
 
         // Control 키가 눌려있는지 검사. Input.GetKey 방식은 OnGUI에서 작동하지 않는다. 또한 버튼이 눌러진 직후 검사하면 그 순간에 다른 이벤트가 작동하고있어서 이렇게 미리 이벤트 발생할 때마다 플래그를 세팅해야한다.
         if (Event.current.type == EventType.KeyDown && Event.current.keyCode == KeyCode.LeftControl)
@@ -380,7 +509,7 @@ public class ObjectClipboardWindow : EditorWindow
         AutoListCount(); // 자동 리스트 카운트 변경
 
         string newPath = GetLastActivePath(); // 최적화를 위해 for 밖으로 이동
-
+        //GUILayoutUtility.GetRect 해서 텍스트 입력칸의 가로 크기를 비율로 적용해야함.
         // Draw List
         scrollPos = EditorGUILayout.BeginScrollView(scrollPos);
         //EditorGUILayout.PropertyField(m_objectsSerial, true);
@@ -389,12 +518,23 @@ public class ObjectClipboardWindow : EditorWindow
             GUILayout.BeginHorizontal();
 
             EditorGUI.BeginChangeCheck();
+            // 오브젝트 필드에 Tooltip을 띄우려면 동일한 Rect를 사용해서 공백의 Labelfield 를 중첩해야하는데, Rect를 썼을 때 자동 사이즈 조절이 잘 안되서 나중으로 미룸
             m_objects[i].m_object = EditorGUILayout.ObjectField(m_objects[i].m_object, typeof(Object), true);
             if (EditorGUI.EndChangeCheck())
                 UpdateEditorPrefs();
 
             if (m_objects[i].m_object != null)
             {
+                if (m_optShowDescription)
+                {
+                    EditorGUI.BeginChangeCheck();
+                    m_objects[i].m_description = EditorGUILayout.TextField(m_objects[i].m_description, GUILayout.Width(50f));
+                    if (EditorGUI.EndChangeCheck())
+                    {
+                        UpdateEditorPrefs();
+                    }
+                }
+                
                 // IconContent의 툴팁은 안나오는데, 아마 아이콘에 포함되어있는듯.
                 if (GUILayout.Button(m_iconToolSelect, GUILayout.Width(buttonWidth), GUILayout.Height(buttonHeight)))
                 {
@@ -537,7 +677,7 @@ public class ObjectClipboardWindow : EditorWindow
         // 리스트 수가 전혀 없으면 true 리턴
         if (m_objects.Count == 0)
         {
-            m_objects.Add(new ClippedObject(null, false));
+            m_objects.Add(new ClippedObject(null, false, ""));
             UpdateEditorPrefs();
             return;
         }
@@ -547,7 +687,7 @@ public class ObjectClipboardWindow : EditorWindow
         // 리스트 끝이 빈 칸이 아니면 빈 칸을 하나 추가
         if (m_objects[end].m_object != null)
         {
-            m_objects.Add(new ClippedObject(null, false));
+            m_objects.Add(new ClippedObject(null, false, ""));
             UpdateEditorPrefs();
             return;
         }
